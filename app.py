@@ -1,82 +1,108 @@
-from flask import Flask, request, jsonify
 import gensim
-import numpy as np
+import random
+from flask import Flask, request, jsonify
+import tdk.gts
 
 app = Flask(__name__)
 
-# fastText modelini yükleyin (Türkçe için önceden eğitilmiş modeli indirin)
-# https://fasttext.cc/docs/en/crawl-vectors.html adresinden Türkçe modelini indirebilirsiniz
-# Model dosyası 'cc.tr.300.bin' olarak varsayılmıştır
-model_path = 'cc.tr.300.bin'  # Model dosyasının yolu
-
-# fastText modelini doğru şekilde yükleyin
+model_path = 'cc.tr.300.bin'
 model = gensim.models.fasttext.load_facebook_model(model_path)
-# Veya sadece kelime vektörlerini yüklemek istiyorsanız:
-# model = gensim.models.KeyedVectors.load_fasttext_format(model_path)
 
-# Gizli kelime
-hidden_word = "bilişim"
+# Function to load Turkish words from words.txt 
+def fetch_turkish_words_from_file():
+    try:
+        with open('words.txt', 'r', encoding='utf-8') as f:
+            words = [line.strip() for line in f if line.strip()]
+        return words
+    except FileNotFoundError:
+        print("Error: words.txt not found.")
+        return []
 
-# Gizli kelimenin embedding'ini alın
+
+turkish_words = fetch_turkish_words_from_file()
+
+if not turkish_words:
+    print("No Turkish words fetched from words.txt, using fallback list.")
+    turkish_words = ["merhaba", "dünya", "kitap", "bilgisayar"]
+
+# Randomly select a hidden word from the list, ensuring it's not a proper noun (doesn't start with an uppercase letter)
+def select_hidden_word(words):
+    while True:
+        word = random.choice(words)
+        if not word[0].isupper():
+            return word
+        print(f"Skipping proper noun: {word}")
+
+# Set the hidden word
+hidden_word = select_hidden_word(turkish_words)
+print(f"Selected hidden word: {hidden_word}")
+
+# Get the embedding of the hidden word
 hidden_embedding = model.wv[hidden_word]
 
-# Tüm kelimeler arasından gizli kelimeye en yakın ve en uzak benzerlik skorlarını bulalım
-all_similarities = []
-for word in model.wv.index_to_key:
-    if word != hidden_word:
-        similarity = model.wv.similarity(hidden_word, word)
-        all_similarities.append(similarity)
+# Print the top 10 most similar words to the hidden word
+most_similar_words = model.wv.most_similar(hidden_word, topn=10)
+print(f"The top 10 most similar words to '{hidden_word}' are:")
+for word, similarity in most_similar_words:
+    print(f"{word}: {similarity:.4f}")
 
-max_similarity = max(all_similarities)  # En yakın kelimenin benzerliği
-min_similarity = min(all_similarities)  # En uzak kelimenin benzerliği
+# Find the max and min similarities for mapping
+all_similarities = [model.wv.similarity(hidden_word, word) for word in model.wv.index_to_key if word != hidden_word]
+max_similarity = max(all_similarities)
+min_similarity = min(all_similarities)
 
-print(f"En yakın benzerlik skoru: {max_similarity}")
-print(f"En uzak benzerlik skoru: {min_similarity}")
-
-# Benzerlik skorlarını 0.30 ile 0.64 arasında sınırlayalım
-# Eğer max_similarity 0.64'ten büyükse 0.64'e, min_similarity 0.30'dan küçükse 0.30'a ayarlayalım
-max_similarity = min(max_similarity, 0.64)
-min_similarity = max(min_similarity, 0.30)
-
-# Cosine similarity hesaplama fonksiyonu
+# Function to calculate cosine similarity
 def calculate_similarity(word1, word2):
     if word1 == word2:
-        return 1.0  # Kelimeler aynıysa benzerlik 1.0 olsun
+        return 1.0
     elif word1 in model.wv and word2 in model.wv:
-        similarity_score = model.wv.similarity(word1, word2)
-        return similarity_score
+        return model.wv.similarity(word1, word2)
     else:
-        return None  # Eğer kelime modelde yoksa None döneriz
+        return None
 
-# Skorları 2 ile 5000 arasında map'leme fonksiyonu
 def map_score(similarity_score, min_similarity, max_similarity):
     if similarity_score == 1.0:
-        return 1  # Kelimenin kendisiyle eşleşiyorsa mesafe 0 olsun
-    elif similarity_score >= max_similarity:
-        return 2  # En yakın kelime için mesafe 2 olsun
-    elif similarity_score <= min_similarity:
-        return 5000  # En uzak kelime için mesafe 5000 olsun
+        return 1
     else:
-        # Min ve max similarity'e göre 2 ile 5000 arasında yeniden ölçeklendir
-        mapped_score = 2 + (5000 - 2) * ((max_similarity - similarity_score) / (max_similarity - min_similarity))
-        return int(mapped_score)
+        mapped_score = 2 + (15000 - 2) * ((max_similarity - similarity_score) / (max_similarity - min_similarity))
+        return max(2, min(15000, int(mapped_score)))
 
-# API endpoint'i
+# API endpoint for similarity
 @app.route('/similarity', methods=['POST'])
 def similarity():
     data = request.get_json()
     guessed_word = data['word']
 
-    # Gizli kelime ile tahmin edilen kelimenin benzerlik skorunu hesapla
     similarity_score = calculate_similarity(hidden_word, guessed_word)
 
     if similarity_score is None:
         return jsonify({'error': 'Kelime modelde bulunamadı'}), 400
 
-    # Benzerlik skorunu 2 ile 5000 arasında map'le
     distance_score = map_score(similarity_score, min_similarity, max_similarity)
 
     return jsonify({'similarity': float(similarity_score), 'distance': distance_score})
+
+# API endpoint to reveal the hidden word
+@app.route('/reveal', methods=['GET'])
+def reveal():
+    return jsonify({'hidden_word': hidden_word})
+
+# API endpoint to get the meaning of the word
+@app.route('/meaning', methods=['GET'])
+def get_word_meaning():
+    word = request.args.get('word')
+    if not word:
+        return jsonify({'error': 'No word provided'}), 400
+    try:
+        results = tdk.gts.search(word)
+        if results:
+            meanings = [entry.meaning for entry in results[0].meanings]
+            return jsonify({'meanings': meanings})
+        else:
+            return jsonify({'meanings': []}), 404
+    except Exception as e:
+        print(f"Error fetching meaning: {e}")
+        return jsonify({'error': 'Error fetching meaning'}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
