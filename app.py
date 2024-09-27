@@ -46,7 +46,7 @@ def rank_words_by_similarity(model, target_word, word_list):
     target_vector = model.get_word_vector(target_word)
 
     for word in word_list:
-        if word != target_word:
+        if word != target_word:  # Gizli kelimeyi dışarıda bırakıyoruz
             word_vector = model.get_word_vector(word)
             # Cosine similarity hesaplama
             similarity = cosine_similarity(target_vector, word_vector)
@@ -119,6 +119,43 @@ def get_word_meaning():
     except Exception as e:
         print(f"Error fetching meaning: {e}")
         return jsonify({'error': 'Error fetching meaning'}), 500
+    
+@app.route('/hint', methods=['GET'])
+def hint():
+    try:
+        # İpucu aralığını alıyoruz (e.g. 300, 150)
+        hint_rank = int(request.args.get('rank'))
+        
+        # İstenilen sıralamadaki kelimeyi alıyoruz
+        if 0 < hint_rank <= len(ranked_similarities):
+            hint_word = ranked_similarities[hint_rank - 1][0]
+            return jsonify({'hint_word': hint_word, 'rank': hint_rank})
+        else:
+            return jsonify({'error': 'Geçersiz ipucu aralığı'}), 400
+    except Exception as e:
+        print(f"Error in hint: {e}")
+        return jsonify({'error': 'Bir hata oluştu'}), 500
+    
+# API endpoint to return the closest 500 words
+@app.route('/closest-words', methods=['GET'])
+def get_closest_words():
+    try:
+        # Get the top 499 words (exclude the hidden word from the ranking)
+        top_499_similar_words = ranked_similarities[:499]
+
+        # Gizli kelimeyi birinci sıraya ekleyin
+        closest_words = [{'word': hidden_word, 'rank': 1}]  # Gizli kelime ilk sırada
+
+        # Kalan kelimeleri sıraya göre ekleyin
+        closest_words += [
+            {'word': word, 'rank': idx + 2}  # 2'den itibaren sıralamaya ekleniyor
+            for idx, (word, _) in enumerate(top_499_similar_words)
+        ]
+
+        return jsonify({'closest_words': closest_words})
+    except Exception as e:
+        print(f"Error fetching closest words: {e}")
+        return jsonify({'error': 'Error fetching closest words'}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
