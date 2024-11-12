@@ -6,7 +6,7 @@ import tdk.gts
 app = Flask(__name__)
 
 # FastText modelini yüklüyoruz
-model_path = 'cc.tr.300.bin'  # Önceden eğitilmiş FastText modelin dosya yolu
+model_path = 'cc.tr.300.bin'
 model = fasttext.load_model(model_path)
 
 # Turkish words from words.txt
@@ -46,7 +46,7 @@ def rank_words_by_similarity(model, target_word, word_list):
     target_vector = model.get_word_vector(target_word)
 
     for word in word_list:
-        if word != target_word:
+        if word != target_word:  # Gizli kelimeyi dışarıda bırakıyoruz
             word_vector = model.get_word_vector(word)
             # Cosine similarity hesaplama
             similarity = cosine_similarity(target_vector, word_vector)
@@ -80,23 +80,42 @@ print(f"The top 10 most similar words to '{hidden_word}' are:")
 for word, similarity in ranked_similarities[:10]:
     print(f"{word}: {similarity:.4f}")
 
+# Mastar kontrolü için yardımcı fonksiyon
+def normalize_infinitive(word, word_list):
+    suffixes = [('mek', 'me'), ('mak', 'ma')]
+    for old_suffix, new_suffix in suffixes:
+        if word.endswith(old_suffix):
+            normalized = word[:-3] + new_suffix
+            # Sadece normalize edilmiş hali kelime listesinde varsa değişikliği kabul et
+            if normalized in word_list:
+                return normalized
+    return word
+
 # API endpoint for similarity rank
 @app.route('/similarity', methods=['POST'])
 def similarity():
     data = request.get_json()
     guessed_word = data['word']
+    
+    # Tahmin edilen kelimeyi ve gizli kelimeyi normalize et
+    # valid_words_in_model listesini kontrol listesi olarak kullan
+    normalized_guess = normalize_infinitive(guessed_word, valid_words_in_model)
+    normalized_hidden = normalize_infinitive(hidden_word, valid_words_in_model)
 
-    if guessed_word == hidden_word:
+    if normalized_guess == normalized_hidden:
         rank = 1
     else:
-        # Tahmin edilen kelimenin sıralamasını buluyoruz
-        rank = calculate_rank(guessed_word, ranked_similarities)
+        # Normalize edilmiş kelimeyi ara
+        rank = None
+        for idx, (word, _) in enumerate(ranked_similarities):
+            if normalize_infinitive(word, valid_words_in_model) == normalized_guess:
+                rank = idx + 2
+                break
 
     if rank is None:
         return jsonify({'error': 'Kelime modelde bulunamadı veya sıralanamadı'}), 400
 
     return jsonify({'rank': rank, 'total_words': len(ranked_similarities)})
-
 
 # API endpoint to reveal the hidden word
 @app.route('/reveal', methods=['GET'])
@@ -119,6 +138,38 @@ def get_word_meaning():
     except Exception as e:
         print(f"Error fetching meaning: {e}")
         return jsonify({'error': 'Error fetching meaning'}), 500
+    
+@app.route('/hint', methods=['GET'])
+def hint():
+    try:
+        hint_rank = int(request.args.get('rank'))
+        
+        if 0 < hint_rank <= len(ranked_similarities):
+            hint_word = ranked_similarities[hint_rank - 1][0]
+            return jsonify({'hint_word': hint_word, 'rank': hint_rank})
+        else:
+            return jsonify({'error': 'Geçersiz ipucu aralığı'}), 400
+    except Exception as e:
+        print(f"Error in hint: {e}")
+        return jsonify({'error': 'Bir hata oluştu'}), 500
+    
+# API endpoint to return the closest 500 words
+@app.route('/closest-words', methods=['GET'])
+def get_closest_words():
+    try:
+        top_499_similar_words = ranked_similarities[:499]
+
+        closest_words = [{'word': hidden_word, 'rank': 1}]
+
+        closest_words += [
+            {'word': word, 'rank': idx + 2}
+            for idx, (word, _) in enumerate(top_499_similar_words)
+        ]
+
+        return jsonify({'closest_words': closest_words})
+    except Exception as e:
+        print(f"Error fetching closest words: {e}")
+        return jsonify({'error': 'Error fetching closest words'}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
